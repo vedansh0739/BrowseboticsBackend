@@ -54,6 +54,7 @@ async def create_browser_instance(session_id):
         page= await browser.new_page()
 
         playwright_instances[session_id] = {'playwright': playwright, 'browser': browser, 'page': page,'history':[]}
+
         return page
     except Exception as e:
         print(f"An error occurred while creating a browser context: {e}")
@@ -93,33 +94,17 @@ async def initiator(request):
             if not page:
                 page = await create_browser_instance(session_id)
 
-
-            await page.goto("https://www.google.com",wait_until='load')
             
-            instance1 = playwright_instances.get(session_id)
-            instance1['history'].append("page.goto('https://www.google.com',wait_until='load')")
 
-            await page.wait_for_load_state('load')
-            screenshot_png =await page.screenshot()
-
-            base64_encoded = base64.b64encode(screenshot_png).decode('utf-8')
+            await page.wait_for_timeout(6000)
 
 
-            speech_file_path = Path(__file__).parent / "speech.mp3"
 
-            music = client.audio.speech.create(
-                model="tts-1",
-                voice="alloy",
-                input="Welcome to SpeakSurf. You are currently on the google homepage. There is a search box and a search button. You can issue commands like typing in a text box or clicking on a button. So here you can issue a command by saying something like: type  google maps in the search bar or click on the search button. Now, press space once to start recording and once again to stop recording"
-            )
 
-            music.stream_to_file(speech_file_path)
-            # Read the audio file and encode it
-            async with aiofiles.open(speech_file_path, 'rb') as audio_file:
-                encoded_audio = base64.b64encode(await audio_file.read()).decode('utf-8')
+
 
             # Return the screenshot and the audio in the response
-            return JsonResponse({'screenshot': base64_encoded, 'audio': encoded_audio})
+            return JsonResponse({'message':'done'})
 
             #driver.quit()
         else:
@@ -130,6 +115,36 @@ async def initiator(request):
     except json.JSONDecodeError as e:
         # Handle JSON parsing errors
         return JsonResponse({'error': 'Invalid JSON data'}, status=400)
+
+
+@csrf_exempt  #||||DEV2PROD||||
+async def gotourl(request):
+
+    data = json.loads(request.body)
+    session_id = request.session.session_key
+    page = get_browser_instance(session_id)
+
+    url=data.get('url')
+    url=url if "://" in url else "http://" + url
+    await page.goto(url,wait_until='load')
+    if not session_id:
+        return JsonResponse({'error': 'No session ID found'}, status=400)
+    instance1 = playwright_instances.get(session_id)
+    instance1['history'].append(f"page.goto('{url}',wait_until='load')")
+    
+
+    
+    if not page:
+        return JsonResponse({'error': 'The browser instance needs to be created before issuing commands'}, status=400)
+    await page.wait_for_load_state('load')
+    await page.wait_for_timeout(1000)
+    screenshot_png = await page.screenshot()
+
+    base64_encoded = base64.b64encode(screenshot_png).decode('utf-8')
+    return JsonResponse({'screenshot': base64_encoded})
+    #driver.quit()
+
+
 
 def check_and_extract(input_string):
     # Pattern to match [[xxx,xxx]] or [[xxx,xxx,xxx,xxx]]
@@ -174,12 +189,18 @@ async def process(request):
             return JsonResponse({'error': 'The browser instance needs to be created before issuing commands'}, status=400)
 
         await page.wait_for_load_state('load')
+        await page.wait_for_timeout(1000)
         screenshot_png = await page.screenshot()
         if "scroll" in cmd.lower():
             await page.evaluate("window.scrollBy(0, window.innerHeight * 0.8);")
             instance1 = playwright_instances.get(session_id)
             instance1['history'].append("page.evaluate('window.scrollBy(0, window.innerHeight * 0.8);')")
             
+            await page.wait_for_load_state('load')
+            await page.wait_for_timeout(1000)
+            screenshot_png =await page.screenshot()
+            base64_encoded = base64.b64encode(screenshot_png).decode('utf-8')
+            return JsonResponse({'screenshot': base64_encoded,'betcmd':cmd,'modelimg':base64_encoded})
         else:
             cmd="What steps do I need to take to \""+cmd+"\"?(with grounding)"
             image = Image.open(io.BytesIO(screenshot_png))
@@ -208,10 +229,12 @@ async def process(request):
             
             
             print("{84}",session_id,"{44}")
-            print(f"{session_id} - {response2.get('cmd')} - {response2.get('imgtype')}")
+            print(f"{session_id} - {response2.get('cmd')} - {response2.get('image')}")
             betcmd=response2.get("cmd")
-            imgtype=response2.get("imgtype")
-            print("++",betcmd,"++",imgtype,"++")
+            modelimg=response2.get('image')
+
+
+            print("++",betcmd,"++",image,"++")
 
             mode, coords=check_and_extract(betcmd)
             coords = [int(x) for x in coords]
@@ -231,58 +254,64 @@ async def process(request):
             await page.mouse.click(x,y)
             instance1 = playwright_instances.get(session_id)
             instance1['history'].append(f"page.mouse.click({x},{y})")
-            await page.wait_for_load_state('load')
-            await page.wait_for_load_state('networkidle')
+
+
 
 
 
             prompt="""You are responsible for extracting characters from a command. The command, called prompt1, is a natural language instruction to perform a task on a browser. If prompt1 is asking for typing any characters with the help of a keyboard then reply with just the characters that are to be typed.
-    Reply with just "code41" if prompt1 is not specifying the characters that are to be typed. 
-    Here are some examples:
+            Reply with just "code41" if prompt1 is not specifying the characters that are to be typed. 
+            Here are some examples:
 
-    EXAMPLE 1:
-    ==================================================
-    prompt1= type amazon sucks in the search box
-    your response= amazon sucks
-    ==================================================
+            EXAMPLE 1:
+            ==================================================
+            prompt1= type amazon sucks in the search box
+            your response= amazon sucks
+            ==================================================
 
-    EXAMPLE 2:
-    ==================================================
-    prompt1= click on hindi
-    your response= code41
-    ==================================================
+            EXAMPLE 2:
+            ==================================================
+            prompt1= click on hindi
+            your response= code41
+            ==================================================
 
-    EXAMPLE 3:
-    ==================================================
-    prompt1= please type google in the search box
-    your response= google
-    ==================================================
+            EXAMPLE 3:
+            ==================================================
+            prompt1= please type google in the search box
+            your response= google
+            ==================================================
 
-    EXAMPLE 4:
-    ==================================================
-    prompt1= scroll down
-    your response= code41
-    ==================================================
-    
-    EXAMPLE 5:
-    ==================================================
-    prompt1= type react in the search bar
-    your response= react
-    ==================================================
+            EXAMPLE 4:
+            ==================================================
+            prompt1= scroll down
+            your response= code41
+            ==================================================
 
-    The following is prompt1 that you are supposed to reply to:
+            EXAMPLE 5:
+            ==================================================
+            prompt1= type react in the search bar
+            your response= react
+            ==================================================
 
-    prompt1= <CMD>
-    your response="""
+            EXAMPLE 6:
+            ==================================================
+            prompt1= enter codecademy in the search box
+            your response= codecademy
+            ==================================================
+
+            The following is prompt1 that you are supposed to reply to:
+
+            prompt1= <CMD>
+            your response="""
             prompt=prompt.replace('<CMD>',cmd)
 
 
             completion = client.chat.completions.create(
-    model="gpt-3.5-turbo",
-    messages=[
-        {"role": "user", "content": prompt}
-    ]
-    )  
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "user", "content": prompt}
+                ]
+            )  
             keyb=completion.choices[0].message.content
             print("||"+keyb+"||")
             if "code41" not in keyb:
@@ -290,30 +319,12 @@ async def process(request):
                 instance1 = playwright_instances.get(session_id)
                 instance1['history'].append(f"page.keyboard.type('{keyb}')")
                 
+            await page.wait_for_load_state('load')
+            await page.wait_for_timeout(1000)
+            screenshot_png =await page.screenshot()
+            base64_encoded = base64.b64encode(screenshot_png).decode('utf-8')
+            return JsonResponse({'screenshot': base64_encoded,'betcmd':betcmd,'modelimg':modelimg})
 
-
-            
-        # await page.wait_for_load_state('load')
-        # screenshot_png =await page.screenshot()
-        # image = Image.open(io.BytesIO(screenshot_png))
-        # if image.mode != 'RGB':
-        #     image = image.convert('RGB')
-
-        
-        # jpeg_buffer = io.BytesIO()
-        # image.save(jpeg_buffer, "JPEG")
-        
-        # jpeg_screenshot = jpeg_buffer.getvalue()
-        # files = {
-        # 'screenshot': ('jpeg_screenshot', jpeg_screenshot, 'image/jpeg'),
-        # 'string_data': (None, "Describe the relevant contents on the web page")
-        # }
-        
-        await page.wait_for_load_state('load')
-        screenshot_png =await page.screenshot()
-        base64_encoded = base64.b64encode(screenshot_png).decode('utf-8')
-        return JsonResponse({'screenshot': base64_encoded})
-        
         
         
         
@@ -370,7 +381,8 @@ async def goback(request):
         for command in instance1['history']:
             await eval(command)
             await page.wait_for_load_state('load')
-            await page.wait_for_load_state('networkidle')
+            await page.wait_for_timeout(1000)
+
 
         screenshot_png =await page.screenshot()
         base64_encoded = base64.b64encode(screenshot_png).decode('utf-8')
